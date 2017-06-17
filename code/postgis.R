@@ -13,62 +13,47 @@ library(DBI)
 library(RPostgreSQL)
 library(plyr)
 library(dplyr)
+library(dbplyr)
 
 source("functions.R")
 
 ##----- 'Global' variables
 
-dbname <- "trajectory"
+dbname <- "pm"
 host <- "localhost"
 port <- "5432"
 user <- Sys.getenv("LOGNAME")
-drop_hours_pre <- 24 # number of hours dropped at the begenning of each trajectory
-file_receptor <- "../data/receptor.csv" # receptor file (e.g., monitors, zip code centroids); 3 columns: "lat", "lng", "target" (= ID)
-dir_trajectories <- "~/Dropbox/Facility_Attributes_2003_2006/parameters_2003/results_2003/" # HYSPLIT trajectory directory
-dir_trajectories_with_ID <- "~/Dropbox/Facility_Attributes_2003_2006/trajID_2003/" # Add trajectory ID to data; must exist; can overwrite dir_trajectories
-dir_linkage_results_as_list <- "~/Dropbox/Facility_Attributes_2003_2006/Linkage_list_2003" # must exist
-dir_linkage_results_as_data_frame <- "~/Dropbox/Facility_Attributes_2003_2006/Linkage_2003" # must exist
-buffer_size <- 10000 # buffer size in meters
-max_height <- 1000
-dismiss_above <- FALSE # FALSE: no height constraint, TRUE: keep as long as height < max_height
+dir_trajectories <- "~/Dropbox/Korea/Trajectories/" # HYSPLIT trajectory directory
+dir_trajectories_with_ID <- "~/Dropbox/Korea/Trajectories_with_ID/" # Add trajectory ID to data; must exist; can overwrite dir_trajectories
+dir_linkage_results <- "~/Dropbox/Korea/Linkage" # must exist
+dir_world_shapefiles <- "/Users/cchoirat/Documents/LocalGit/Korea/data/countries/countries.shp" # WARNING: absolute path required
 
-##----- Create spatial database
+##----- Create spatial database.  YOU ONLY NEED TO DO IT ONCE.
 
-create_trajectory_db() # create 'trajectory' database
+create_trajectory_db() # create 'pm' database
 # system("dropdb trajectory") # drops 'trajectory' database
+add_asia_projection_to_db()
+import_world_shapefiles()
 
-##----- Load receptors (e.g., monitors, zip code centroids)
+##----- Pre-process HYSPLIT output to add trajectory ID's
 
-receptor <- fread(file_receptor)
-copy_to_db_points(receptor)
-add_spatial_index("receptor")
+hysplit_input <- paste0(dir_trajectories, list.files(dir_trajectories))
 
-##----- Looping over HYSPLIT trajectories
-
-files_trajectories <- list.files(dir_trajectories)
-# file_trajectory <- files_trajectories[1]
-
-for (file_trajectory in files_trajectories[1:3]) { # for testing purposes
-# for (file_trajectory in files_trajectories) {
-  print(file_trajectory)
-  
-  p_trajectory <- preprocess_trajectory(file.path(dir_trajectories, file_trajectory),
-                                        drop_hours_pre = drop_hours_pre,
-                                        dismiss_above = FALSE)
-  write.csv(p_trajectory, file.path(dir_trajectories_with_ID, file_trajectory))
-  copy_to_db_points(p_trajectory)
-  
-  ##-- Intersect the dummy plume trajectory with the receptor buffer
-  create_line_geom() # create table l_trajectory with timestamp information
-  out <- intersection_point_linestring()
-  
-  ##-- Write linkage to files
-  write.csv(out, file.path(dir_linkage_results_as_list, file_trajectory))
-  df_out <- process_linkage_output(data.frame(out))
-  write.csv(df_out, file.path(dir_linkage_results_as_data_frame, file_trajectory))
-  
-  ##-- Remove tables from database before next iteration
-  remove_table("p_trajectory")
-  remove_table("l_trajectory")
+for (f in hysplit_input) {
+  print(f)
+  hysplit_output <- file.path(dir_trajectories_with_ID, basename(f))
+  d <- preprocess_trajectory(f)
+  fwrite(d, hysplit_output)
 }
 
+##----- Link one processed HYSPLIT output
+
+f <- hysplit_processed <- paste0(dir_trajectories_with_ID, list.files(dir_trajectories_with_ID))[2]
+
+traj1 <- fread(f)
+copy_to_db_points(pmkorea, "traj1")
+link <- percentage_trajectories(table_pm = "traj1", table_link = "traj1_link", table_lines = "traj1_lines")
+link[, date := traj1$date[1]]
+link[, receptor := traj1$receptor[1]]
+fwrite(link, file.path(dir_linkage_results, basename(f)))
+remove_table("traj1")

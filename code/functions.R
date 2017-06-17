@@ -1,3 +1,5 @@
+##----- Create spatial database
+
 create_trajectory_db <- function() {
   system(paste("createdb", dbname))
   db <- src_postgres(dbname = dbname, host = host, port = port, user = user)
@@ -5,12 +7,49 @@ create_trajectory_db <- function() {
   dbDisconnect(db$con)
 }
 
+##----- Add projection coordinate system for Asia
+
+add_asia_projection_to_db <- function() {
+  db <- src_postgres(dbname = dbname, host = host, port = port, user = user)
+  cmd <- "INSERT into spatial_ref_sys (srid, auth_name, auth_srid, proj4text, srtext) values (102012, 'esri', 102012, '+proj=lcc +lat_1=30 +lat_2=62 +lat_0=0 +lon_0=105 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs ', 'PROJCS[''Asia_Lambert_Conformal_Conic'',GEOGCS[''GCS_WGS_1984'',DATUM[''WGS_1984'',SPHEROID[''WGS_1984'',6378137,298.257223563]],PRIMEM[''Greenwich'',0],UNIT[''Degree'',0.017453292519943295]],PROJECTION[''Lambert_Conformal_Conic_2SP''],PARAMETER[''False_Easting'',0],PARAMETER[''False_Northing'',0],PARAMETER[''Central_Meridian'',105],PARAMETER[''Standard_Parallel_1'',30],PARAMETER[''Standard_Parallel_2'',62],PARAMETER[''Latitude_Of_Origin'',0],UNIT[''Meter'',1],AUTHORITY[''EPSG'',''102012'']]');"
+  dbGetQuery(db$con, cmd)
+  dbDisconnect(db$con)
+}
+
+##----- Import world coutries shapefile using shp2pgsql, note that the countries.shp was previsouly re-project 
+##----- in Asia Lambert Conformal Conic projection
+
+import_world_shapefiles <- function() {
+  cmd <- paste("shp2pgsql -c -D -I -s 102012",
+               dir_world_shapefiles,
+                "countries | psql -d", dbname, "-h localhost -U", user);
+  system(cmd)
+}
+
+##----- Copy data to database as 2D points and change the CRS
+
+copy_to_db_points <- function(table, table_name = NULL) {
+  db <- src_postgres(dbname = dbname, host = host, port = port, user = user)
+  if (is.null(table_name))
+    table_name <- deparse(substitute(table))
+  copy_to(dest = db, df = table, name = table_name, temporary = FALSE)
+  #-- add the geometry column
+  dbGetQuery(db$con, paste("ALTER TABLE", table_name, "ADD COLUMN geom geometry(POINT, 4326);"))
+  #-- update the geometry column
+  dbGetQuery(db$con, paste("UPDATE", table_name, "set geom = ST_SetSRID(ST_MakePoint(lng, lat), 4326);"))
+  #-- create spatial index
+  dbGetQuery(db$con, paste("CREATE INDEX pmkorea_gix ON", table_name, "USING GIST (geom);"))
+  #-- re-project the table to EPSG: 102012 (Asia Lambert Conformal Conic)
+  dbGetQuery(db$con, paste("ALTER TABLE", table_name, "ALTER COLUMN geom TYPE geometry(Point, 102012) USING ST_Transform(geom, 102012);"))
+  dbDisconnect(db$con)
+}
+
 ##----- Add identifier to trajectory
 
-preprocess_trajectory <- function(file_trajectory, drop_hours_pre = 24, dismiss_above = dismiss_above) {
+preprocess_trajectory <- function(file_trajectory, drop_hours_pre = 0, dismiss_above = FALSE) {
   trajectory <- fread(file_trajectory)
   nb_unique_trajectories <- nrow(unique(trajectory, by = "date"))
-  nb_days <- 7 # by construction of the HYSPLIT trajectories
+  nb_days <- 5 # by construction of the HYSPLIT trajectories
   nb_obs_per_trajectory <- 24 * nb_days + 1 # hourly observations
   traj_ID <- data.table(expand.grid(1:nb_obs_per_trajectory, 1:nb_unique_trajectories))
   traj_ID[, Var2 := paste0("ID-", Var2)]
@@ -28,89 +67,28 @@ preprocess_trajectory <- function(file_trajectory, drop_hours_pre = 24, dismiss_
   return(d)
 }
 
-##----- Transform list of targets to data frame
+##----- Spatial linkage
 
-process_linkage_output <- function(d) {
-  l <- stringr::str_split(d$target, " _ ")
-  # lu <- lapply(l, unique)
-  pu <- plyr::ldply(l, rbind)
-  
-  D <- cbind(d, pu)
-  D$target <- NULL
-  
-  D %>% gather(Idx, target, -receptor, -date, -tid) %>% na.omit() %>% arrange(tid) -> DD
-  DD$Idx <- NULL
-  return(data.table(DD))
-}
-
-##----- Copy data to database as 2D points and change the CRS
-
-copy_to_db_points <- function(table, table_name = NULL) {
+percentage_trajectories <- function(table_pm = "pmkorea", table_link = "pmlink", table_lines = "pmlines") {
   db <- src_postgres(dbname = dbname, host = host, port = port, user = user)
-  if (is.null(table_name))
-    table_name <- deparse(substitute(table))
-  copy_to(dest = db, df = table, name = table_name, temporary = FALSE)
-  dbGetQuery(db$con, paste("ALTER TABLE", table_name, "ADD COLUMN gid serial PRIMARY KEY;"))
-  dbGetQuery(db$con, paste("ALTER TABLE", table_name, "ADD COLUMN geom geometry(POINT, 2163);"))
-  dbGetQuery(db$con, paste("UPDATE", table_name, "SET geom = ST_Transform(ST_SetSRID(ST_MakePoint(lng, lat), 4326), 2163);"))
+  #-- create a pmline by t-id
+  cmd <- paste0("SELECT ", table_pm, ".tid, ST_MakeLine(", table_pm, ".geom) as geom into ", table_lines, " from ", table_pm, " GROUP BY ", table_pm, ".tid;")
+  dbGetQuery(db$con, cmd)
+  #-- create a spatial index
+  cmd <- paste("CREATE INDEX pmline_gix ON", table_lines, "USING GIST (geom);")
+  dbGetQuery(db$con, cmd)
+  #-- calculate pmlines that intersect countries boundaries and percentage
+  cmd <- paste("CREATE TABLE", table_link, "AS SELECT a.name, a.iso2, b.tid, ST_LENGTH(ST_Intersection(a.geom, b.geom)) as pmlength, sum(ST_LENGTH(ST_Intersection(a.geom, b.geom))) over(partition by b.tid) as tidlength, (ST_LENGTH(ST_Intersection(a.geom, b.geom))/sum(ST_LENGTH(ST_Intersection(a.geom, b.geom))) over(partition by b.tid)) * 100 as perc FROM countries a, ", table_lines, " b WHERE ST_Intersects(a.geom, b.geom) group by b.tid, a.name, a.iso2, a.geom, b.geom;")
+  cmd
+  dbGetQuery(db$con, cmd)
+  link <- collect(tbl(db, table_link))
+  remove_table(table_lines)
+  remove_table(table_link)
   dbDisconnect(db$con)
+  return(data.table(link))
 }
 
-##----- Add a spatial index
-
-add_spatial_index <- function(table_name) {
-  db <- src_postgres(dbname = dbname, host = host, port = port, user = user)
-  dbGetQuery(db$con, paste("CREATE INDEX sidx ON", table_name, "USING GIST (geom);"))
-  dbDisconnect(db$con)
-}
-
-##----- Transform the 
-
-create_line_geom <- function() {
-  db <- src_postgres(dbname = dbname, host = host, port = port, user = user)
-  q <- "CREATE TABLE l_trajectory(
-            id serial,
-            receptor character varying,
-            date character varying,
-            tid character varying,
-            geom geometry(LINESTRING, 2163));
-        INSERT INTO l_trajectory(
-            receptor,
-            date,
-            tid,
-            geom)
-        SELECT
-            receptor,
-            date,
-            tid,
-            ST_MakeLine(geom) AS newgeom FROM p_trajectory
-        GROUP BY
-            receptor,
-            date,
-            tid;"
-  dbGetQuery(db$con, q)
-  dbDisconnect(db$con)
-}
-
-intersection_point_linestring <- function() {
-  db <- src_postgres(dbname = dbname, host = host, port = port, user = user)
-  q <- paste("SELECT
-            p2.receptor,
-            p2.date,
-            p2.tid,
-            string_agg(target, ' _ ') AS target FROM receptor AS p1
-        JOIN
-            l_trajectory as p2
-        ON
-            ST_DWithin(p1.geom, p2.geom,", buffer_size, ")
-        GROUP BY
-            p2.receptor,
-            p2.date,
-            p2.tid;")
-  out <- dbGetQuery(db$con, q)
-  dbDisconnect(db$con)
-  return(data.table(out))
-}
+##----- Remove table
 
 remove_table <- function(table_name) {
   db <- src_postgres(dbname = dbname, host = host, port = port, user = user)
