@@ -2,10 +2,10 @@
 # brew install postgres
 # brew install postgis
 
-##----- Start Postgres
-# pg_ctl -D /usr/local/var/postgres start &
+##----- Start Postgres from R
+system("pg_ctl -D /usr/local/var/postgres start &")
 ##----- Stop Postgres
-# pg_ctl -D /usr/local/var/postgres stop &
+# system("pg_ctl -D /usr/local/var/postgres stop &")
 
 library(tidyr)
 library(data.table)
@@ -28,7 +28,11 @@ dir_trajectories_with_ID <- "~/Dropbox/Korea/Trajectories_with_ID/" # Add trajec
 dir_linkage_results <- "~/Dropbox/Korea/Linkage" # must exist
 dir_world_shapefiles <- "/Users/cchoirat/Documents/LocalGit/Korea/data/countries/countries.shp" # WARNING: absolute path required
 
-##----- Create spatial database.  YOU ONLY NEED TO DO IT ONCE.
+##------------------------------------
+## BEGIN: YOU ONLY NEED TO DO IT ONCE
+##------------------------------------
+
+##----- Create spatial database.
 
 create_trajectory_db() # create 'pm' database
 # system("dropdb trajectory") # drops 'trajectory' database
@@ -46,14 +50,30 @@ for (f in hysplit_input) {
   fwrite(d, hysplit_output)
 }
 
+##------------------------------------
+## END: YOU ONLY NEED TO DO IT ONCE
+##------------------------------------
+
+##----------------------------------------------------------
+## BEGIN: YOU COULD USE A LOOP (NO RENAMING NEEDED).
+##        YOU CAN ALSO OPEN DIFFERENT R SESSIONS HERE
+##        AS LONG AS YOU USE A DIFFERENT VARIABLE NAME
+##        FOR EXAMPLE traj2, traj2_link, traj2_lines.
+##----------------------------------------------------------
+
 ##----- Link one processed HYSPLIT output
 
-f <- hysplit_processed <- paste0(dir_trajectories_with_ID, list.files(dir_trajectories_with_ID))[2]
+hysplit_processed <- paste0(dir_trajectories_with_ID, list.files(dir_trajectories_with_ID))
 
+f <- hysplit_processed[2]
 traj1 <- fread(f)
-copy_to_db_points(pmkorea, "traj1")
+copy_to_db_points(traj1, "traj1")
+## linkage takes 1-2 minutes:
 link <- percentage_trajectories(table_pm = "traj1", table_link = "traj1_link", table_lines = "traj1_lines")
-link[, date := traj1$date[1]]
-link[, receptor := traj1$receptor[1]]
-fwrite(link, file.path(dir_linkage_results, basename(f)))
+M <- merge(unique(traj1, by = "tid"), link)
+fwrite(M, file.path(dir_linkage_results, basename(f)))
 remove_table("traj1")
+
+##----------------------------------------------------------
+## END: YOU COULD USE A LOOP OR DIFFERENT R SESSIONS HERE
+##----------------------------------------------------------
