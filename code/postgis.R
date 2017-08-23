@@ -28,6 +28,9 @@ dir_trajectories_with_ID <- "~/Dropbox/Korea/Trajectories_with_ID/" # Add trajec
 dir_linkage_results <- "~/Dropbox/Korea/Linkage" # must exist
 dir_world_shapefiles <- "/Users/cchoirat/Documents/LocalGit/Korea/data/countries/countries.shp" # WARNING: absolute path required
 
+max_height <- 500
+min_height <- 0
+
 ##------------------------------------
 ## BEGIN: YOU ONLY NEED TO DO IT ONCE
 ##------------------------------------
@@ -46,7 +49,7 @@ hysplit_input <- paste0(dir_trajectories, list.files(dir_trajectories))
 for (f in hysplit_input) {
   print(f)
   hysplit_output <- file.path(dir_trajectories_with_ID, basename(f))
-  d <- preprocess_trajectory(f)
+  d <- preprocess_trajectory_korea(f, min_height, min_height)
   fwrite(d, hysplit_output)
 }
 
@@ -65,7 +68,7 @@ for (f in hysplit_input) {
 
 hysplit_processed <- paste0(dir_trajectories_with_ID, list.files(dir_trajectories_with_ID))
 
-f <- hysplit_processed[2]
+f <- hysplit_processed[1]
 traj1 <- fread(f)
 copy_to_db_points(traj1, "traj1")
 ## linkage takes 1-2 minutes:

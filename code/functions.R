@@ -46,7 +46,7 @@ copy_to_db_points <- function(table, table_name = NULL) {
 
 ##----- Add identifier to trajectory
 
-preprocess_trajectory <- function(file_trajectory, drop_hours_pre = 0, dismiss_above = FALSE) {
+preprocess_trajectory_korea <- function(file_trajectory, min_height = 0, max_height = 500) {
   trajectory <- fread(file_trajectory)
   nb_unique_trajectories <- nrow(unique(trajectory, by = "date"))
   nb_days <- 5 # by construction of the HYSPLIT trajectories
@@ -57,14 +57,14 @@ preprocess_trajectory <- function(file_trajectory, drop_hours_pre = 0, dismiss_a
   trajectory[, Order := traj_ID$Var1]
   d <- trajectory[, .(receptor, date, lat, lon, height, Order, ID)]
   names(d) <- c("receptor", "date", "lat", "lng", "height", "order", "tid")
-  d <- d[order > drop_hours_pre]
-  if (dismiss_above) {
-    d$above <- 0
-    d[, above := as.numeric(height > max_height)]
-    d <- d[, .SD[order < match(1, above)], by = tid]
-    d[, above := NULL]
-  }
-  return(d)
+  d <- as_tibble(d)
+  d %>% 
+    group_by(tid) %>%
+    mutate(first_above = min(which(height > max_height | row_number() == n()))) %>%
+    mutate(first_below = min(which(height < min_height | row_number() == n()))) %>% 
+    filter(row_number() < min(first_above, first_below)) %>% 
+    select(-order, first_above, first_below) -> D
+  return(data.table(d))
 }
 
 ##----- Spatial linkage
