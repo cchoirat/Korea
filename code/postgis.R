@@ -49,7 +49,7 @@ hysplit_input <- paste0(dir_trajectories, list.files(dir_trajectories))
 for (f in hysplit_input) {
   print(f)
   hysplit_output <- file.path(dir_trajectories_with_ID, basename(f))
-  d <- preprocess_trajectory_korea(f, min_height, min_height)
+  d <- preprocess_trajectory_korea(f, min_height, max_height)
   fwrite(d, hysplit_output)
 }
 
