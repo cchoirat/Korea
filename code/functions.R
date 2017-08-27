@@ -57,14 +57,11 @@ preprocess_trajectory_korea <- function(file_trajectory, min_height = 0, max_hei
   trajectory[, Order := traj_ID$Var1]
   d <- trajectory[, .(receptor, date, lat, lon, height, Order, ID)]
   names(d) <- c("receptor", "date", "lat", "lng", "height", "order", "tid")
-  d <- as_tibble(d)
-  d %>% 
-    group_by(tid) %>%
-    mutate(first_above = min(which(height > max_height | row_number() == n()))) %>%
-    mutate(first_below = min(which(height < min_height | row_number() == n()))) %>% 
-    filter(row_number() < min(first_above, first_below)) %>% 
-    select(-order, first_above, first_below) -> D
-  return(data.table(d))
+  d[, first_above := min(which(height > max_height | order == .N)), by = "tid"]
+  d[, first_below := min(which(height < min_height | order == .N)), by = "tid"]
+  d <- d[order < first_above & order < first_below, .SD, by = "tid"]
+  d[, c("first_above", "first_below", "order") := NULL]
+  return(d)
 }
 
 ##----- Spatial linkage
